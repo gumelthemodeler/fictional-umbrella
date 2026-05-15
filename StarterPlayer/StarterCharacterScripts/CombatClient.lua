@@ -1,4 +1,5 @@
 -- @ScriptType: LocalScript
+-- @ScriptType: LocalScript
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -16,19 +17,23 @@ local camera = Workspace.CurrentCamera
 
 local DEBUG_HITBOXES = false 
 local MAX_BARRAGE_DURATION = 3 
+local SLAM_COOLDOWN = 6
 
 local SFX = {
-	Swing = 140192907374090,       -- Sound when you punch the air
-	Hit = 139795256698131,         -- Heavy meat punch sound
-	BarrageHit = 132802057233724,  -- Faster, lighter punch sound
-	Block = 136811265205147,       -- Metallic or dull thud sound
-	GuardBreak = 112313065306810   -- Glass shatter or massive boom 
+	Swing = 140192907374090,       
+	Hit = 139795256698131,         
+	BarrageHit = 132802057233724,  
+	Block = 14081042148,       
+	GuardBreak = 112313065306810,
+	Dodge = 134184377306867, -- ADD DODGE ID
+	Slam = 000000000   -- ADD SLAM ID
 }
 
 local CombatFolder = ReplicatedStorage:WaitForChild("CombatEvents")
 local M1Event = CombatFolder:WaitForChild("M1Event")
 local BarrageEvent = CombatFolder:WaitForChild("BarrageEvent")
 local BlockEvent = CombatFolder:WaitForChild("BlockEvent")
+local SlamEvent = CombatFolder:WaitForChild("SlamEvent")
 local VFXEvent = CombatFolder:WaitForChild("VFXEvent")
 
 local function loadTrack(id, priority)
@@ -52,84 +57,38 @@ local combo = 1
 local isAttacking = false
 local isBarraging = false
 local isBlocking = false
-local isSprinting = false
 local inputBuffered = false
 local lastM1 = 0
 local barrageTask = nil 
-
--- Base speeds
-local WALK_SPEED = 16
-local SPRINT_SPEED = 28
-local targetSpeed = WALK_SPEED
+local lastSlamTime = 0 -- Local cooldown tracker
 
 local function playSound(soundId, position, volume, pitch)
 	if soundId == 0 then return end 
-
 	local att = Instance.new("Attachment")
 	att.Position = position
 	att.Parent = Workspace.Terrain
-
 	local sound = Instance.new("Sound")
 	sound.SoundId = "rbxassetid://" .. tostring(soundId)
 	sound.Volume = volume or 1
 	sound.PlaybackSpeed = pitch or 1
 	sound.Parent = att
-
 	sound:Play()
-
-	sound.Ended:Connect(function()
-		att:Destroy()
-	end)
+	sound.Ended:Connect(function() att:Destroy() end)
 	Debris:AddItem(att, 5)
 end
 
-local function screenShake()
+local function screenShake(intensity)
+	intensity = intensity or 0.4 
 	task.spawn(function()
-		for i = 1, 4 do
-			local offset = CFrame.Angles(math.rad(math.random(-2, 2)), math.rad(math.random(-2, 2)), 0)
+		for i = 1, 3 do 
+			local rx = (math.random(-10, 10) / 10) * intensity
+			local ry = (math.random(-10, 10) / 10) * intensity
+			local offset = CFrame.Angles(math.rad(rx), math.rad(ry), 0)
 			camera.CFrame = camera.CFrame * offset
 			task.wait()
 		end
 	end)
 end
-
--- ==========================================
--- Movement & Camera Fluidity System
--- ==========================================
-local currentTilt = 0
-RunService.RenderStepped:Connect(function(deltaTime)
-	if not character or not rootPart or not humanoid then return end
-	if humanoid.Health <= 0 then return end
-
-	-- 1. SMOOTH MOMENTUM ACCELERATION
-	-- Interpolate the WalkSpeed so you don't instantly snap to max speed
-	if not character:GetAttribute("Stunned") and not isBlocking and not isBarraging then
-		humanoid.WalkSpeed = humanoid.WalkSpeed + (targetSpeed - humanoid.WalkSpeed) * (10 * deltaTime)
-	end
-
-	-- 2. DYNAMIC FOV ZOOM
-	-- Reads physical velocity. The faster you move (or lunge), the more the camera pulls back
-	local flatVelocity = Vector3.new(rootPart.AssemblyLinearVelocity.X, 0, rootPart.AssemblyLinearVelocity.Z).Magnitude
-	local targetFOV = 70 + (flatVelocity * 0.45) -- Multiplier controls zoom intensity
-	targetFOV = math.clamp(targetFOV, 70, 95)
-
-	-- Only lerp FOV if we aren't hard-tweening it elsewhere
-	camera.FieldOfView = camera.FieldOfView + (targetFOV - camera.FieldOfView) * (8 * deltaTime)
-
-	-- 3. CAMERA STRAFE TILTING
-	-- Reads player input to lean the camera left or right
-	local moveVector = require(player.PlayerScripts.PlayerModule):GetControls():GetMoveVector()
-	local targetTilt = 0
-
-	if moveVector.X < -0.1 then
-		targetTilt = 2.5 -- Lean Left
-	elseif moveVector.X > 0.1 then
-		targetTilt = -2.5 -- Lean Right
-	end
-
-	currentTilt = currentTilt + (targetTilt - currentTilt) * (8 * deltaTime)
-	camera.CFrame = camera.CFrame * CFrame.Angles(0, 0, math.rad(currentTilt))
-end)
 
 VFXEvent.OnClientEvent:Connect(function(vfxType, position, attacker)
 	local part = Instance.new("Part")
@@ -137,58 +96,92 @@ VFXEvent.OnClientEvent:Connect(function(vfxType, position, attacker)
 	part.Transparency = 1
 	part.Anchored = true
 	part.CanCollide = false
-
-	local randomRotation = CFrame.Angles(
-		math.rad(math.random(0, 360)),
-		math.rad(math.random(0, 360)),
-		math.rad(math.random(0, 360))
-	)
-
-	if attacker == player then
-		local screenOffset = CFrame.new(math.random(-12, 12)/10, math.random(-12, 12)/10, -2.5)
-		part.CFrame = camera.CFrame * screenOffset * randomRotation
-	else
-		part.CFrame = CFrame.new(position) * randomRotation
-	end
-
+	part.CFrame = CFrame.new(position, camera.CFrame.Position) * CFrame.new(0, 0, -1)
 	part.Parent = Workspace
 
 	local att = Instance.new("Attachment", part)
-	local emitter = Instance.new("ParticleEmitter", att)
 
-	emitter.Texture = "rbxassetid://16910627138" 
-	emitter.Enabled = false 
-	emitter.LightEmission = 1
+	local hitmarker = Instance.new("ParticleEmitter", att)
+	hitmarker.Texture = "rbxassetid://16910627138" 
+	hitmarker.Enabled = false 
+	hitmarker.LightEmission = 1
+	hitmarker.ZOffset = 1 
+	hitmarker.LockedToPart = true 
+	hitmarker.Speed = NumberRange.new(0)
+	hitmarker.Rotation = NumberRange.new(0, 360) 
+	hitmarker.RotSpeed = NumberRange.new(0) 
+	hitmarker.Lifetime = NumberRange.new(0.12, 0.15) 
 
-	emitter.SpreadAngle = Vector2.new(360, 360) 
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-300, 300) 
-	emitter.Acceleration = Vector3.new(0, -30, 0) 
-
-	emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 1.2), NumberSequenceKeypoint.new(1, 0)})
-	emitter.Speed = NumberRange.new(20, 50) 
-	emitter.Drag = 6 
-	emitter.Lifetime = NumberRange.new(0.15, 0.25) 
+	local sparks = Instance.new("ParticleEmitter", att)
+	sparks.Texture = "rbxassetid://281983280"
+	sparks.Enabled = false
+	sparks.LightEmission = 1
+	sparks.ZOffset = 0.5
+	sparks.SpreadAngle = Vector2.new(360, 360)
+	sparks.Speed = NumberRange.new(40, 75)
+	sparks.Drag = 8
+	sparks.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 0)})
+	sparks.Lifetime = NumberRange.new(0.15, 0.25)
 
 	if vfxType == "Hit" then
-		emitter:Emit(4)
+		hitmarker.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.1, 2.5), NumberSequenceKeypoint.new(1, 0)
+		})
+		hitmarker:Emit(1) 
+		sparks.Color = ColorSequence.new(Color3.fromRGB(255, 180, 80))
+		sparks:Emit(4)
 		playSound(SFX.Hit, position, 1, math.random(90, 110)/100)
 
 	elseif vfxType == "BarrageHit" then
-		emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.7), NumberSequenceKeypoint.new(1, 0)})
-		emitter:Emit(2)
+		hitmarker.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.1, 1.2), NumberSequenceKeypoint.new(1, 0)
+		})
+		hitmarker:Emit(1)
+		sparks.Color = ColorSequence.new(Color3.fromRGB(255, 200, 100))
+		sparks:Emit(2)
 		playSound(SFX.BarrageHit, position, 0.6, math.random(110, 130)/100)
 
 	elseif vfxType == "Block" then
-		emitter.Color = ColorSequence.new(Color3.fromRGB(150, 200, 255))
-		emitter:Emit(3)
+		hitmarker.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.1, 2), NumberSequenceKeypoint.new(1, 0)
+		})
+		hitmarker.Color = ColorSequence.new(Color3.fromRGB(150, 200, 255))
+		hitmarker:Emit(1)
+		sparks.Color = ColorSequence.new(Color3.fromRGB(100, 150, 255))
+		sparks:Emit(3)
 		playSound(SFX.Block, position, 1, math.random(90, 110)/100)
 
 	elseif vfxType == "GuardBreak" then
-		emitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 3), NumberSequenceKeypoint.new(1, 0)})
-		emitter:Emit(10)
+		hitmarker.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.1, 4.5), NumberSequenceKeypoint.new(1, 0)
+		})
+		hitmarker:Emit(2)
+		sparks.Color = ColorSequence.new(Color3.fromRGB(255, 100, 50))
+		sparks.Speed = NumberRange.new(80, 120)
+		sparks:Emit(12)
 		playSound(SFX.GuardBreak, position, 1.5, 1)
-		screenShake()
+		screenShake(2.5) 
+
+	elseif vfxType == "Dodge" then
+		sparks.Color = ColorSequence.new(Color3.fromRGB(150, 220, 255))
+		sparks.Speed = NumberRange.new(20, 40)
+		sparks:Emit(8)
+		playSound(SFX.Dodge, position, 1.2, 1)
+
+	elseif vfxType == "Slam" then
+		part.CFrame = CFrame.new(position) * CFrame.Angles(math.pi/2, 0, 0) 
+		hitmarker.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.1, 15), NumberSequenceKeypoint.new(1, 0)
+		})
+		hitmarker.Color = ColorSequence.new(Color3.fromRGB(255, 80, 0))
+		hitmarker:Emit(3)
+
+		sparks.Color = ColorSequence.new(Color3.fromRGB(255, 100, 0))
+		sparks.Speed = NumberRange.new(100, 150)
+		sparks:Emit(30)
+
+		playSound(SFX.Slam, position, 2, 0.8)
+		screenShake(3.0) 
 	end
 
 	Debris:AddItem(part, 0.5)
@@ -222,13 +215,11 @@ local function castHitbox(currentCombo)
 		local hum = p.Parent:FindFirstChild("Humanoid")
 		if hum and hum.Health > 0 then
 			hitSomeone = true
-			screenShake()
+			screenShake(currentCombo == 3 and 1.2 or 0.4) 
 			M1Event:FireServer(hum, currentCombo) 
 
 			local currentAnim = punchAnims[currentCombo]
 			if currentAnim then currentAnim:AdjustSpeed(0) end
-
-			-- Temporarily anchor for hitstop impact
 			rootPart.Anchored = true 
 
 			local pauseTime = (currentCombo == 3) and 0.12 or 0.08
@@ -236,29 +227,59 @@ local function castHitbox(currentCombo)
 				if currentAnim then currentAnim:AdjustSpeed(1) end
 				rootPart.Anchored = false
 			end)
-
 			break 
 		end
 	end
 
-	if not hitSomeone then
-		playSound(SFX.Swing, hitboxCFrame.Position, 0.8, math.random(90, 110)/100)
-	end
+	if not hitSomeone then playSound(SFX.Swing, hitboxCFrame.Position, 0.8, math.random(90, 110)/100) end
+end
+
+-- ==========================================
+-- GROUND SLAM MECHANIC (WITH WEIGHT & STUN)
+-- ==========================================
+local function performGroundSlam()
+	-- Cooldown Check
+	if tick() - lastSlamTime < SLAM_COOLDOWN then return end
+	lastSlamTime = tick()
+
+	isAttacking = true
+
+	-- Pre-Slam Visual: Camera aggressively tilts down
+	TweenService:Create(humanoid, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CameraOffset = Vector3.new(0, -1, 0)}):Play()
+
+	-- Shoot violently downward
+	rootPart.AssemblyLinearVelocity = Vector3.new(0, -180, 0)
+
+	local connection
+	local timeout = tick()
+
+	connection = RunService.Heartbeat:Connect(function()
+		if humanoid:GetState() ~= Enum.HumanoidStateType.Freefall or tick() - timeout > 2 then
+			connection:Disconnect()
+
+			-- IMPACT WEIGHT: Hard anchor the character so they absorb the impact
+			rootPart.Anchored = true
+
+			-- Post-Slam Visual: Camera recoils heavily back up
+			TweenService:Create(humanoid, TweenInfo.new(0.3, Enum.EasingStyle.Bounce), {CameraOffset = Vector3.new(0, 0, 0)}):Play()
+
+			SlamEvent:FireServer()
+
+			-- RECOVERY STUN: Prevent them from moving/attacking for 0.4s
+			task.delay(0.2, function()
+				rootPart.Anchored = false
+				task.wait(0.4) -- The stun window before they can fight again
+				isAttacking = false
+			end)
+		end
+	end)
 end
 
 local function stopBarrage()
 	if not isBarraging then return end
 	isBarraging = false
-
-	if barrageTask then
-		task.cancel(barrageTask)
-		barrageTask = nil
-	end
-
-	if not isBlocking and not character:GetAttribute("Stunned") then 
-		humanoid.WalkSpeed = isSprinting and SPRINT_SPEED or WALK_SPEED
-	end
-
+	if barrageTask then task.cancel(barrageTask) barrageTask = nil end
+	if not isBlocking and not character:GetAttribute("Stunned") then humanoid.WalkSpeed = 16 end
 	barrageTrack:Stop(0)
 	BarrageEvent:FireServer(false)
 end
@@ -267,14 +288,13 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end
 	if character:GetAttribute("Stunned") then return end
 
-	-- MOMENTUM SPRINT (Left Shift)
-	if input.KeyCode == Enum.KeyCode.LeftShift then
-		isSprinting = true
-		targetSpeed = SPRINT_SPEED
-	end
-
 	if input.UserInputType == Enum.UserInputType.MouseButton1 then
 		if isBarraging or isBlocking then return end
+
+		if humanoid:GetState() == Enum.HumanoidStateType.Freefall and camera.CFrame.LookVector.Y < -0.6 then
+			if not isAttacking then performGroundSlam() end
+			return
+		end
 
 		if isAttacking then
 			inputBuffered = true
@@ -288,19 +308,15 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			inputBuffered = false
 			lastM1 = tick()
 
-			-- MOVEMENT LUNGE: Instead of slowing down completely, push the player forward
-			-- This retains combat mobility and works beautifully with the FOV zoom
 			local lookVector = rootPart.CFrame.LookVector
-			local lungeForce = (combo == 3) and 65 or 40 -- Heavy finisher pushes you further
+			local lungeForce = (combo == 3) and 65 or 40 
 			rootPart.AssemblyLinearVelocity = Vector3.new(lookVector.X * lungeForce, rootPart.AssemblyLinearVelocity.Y, lookVector.Z * lungeForce)
 
 			local currentTrack = punchAnims[combo]
 			currentTrack:Play()
 
 			local comboToCast = combo
-			task.delay(0.15, function()
-				castHitbox(comboToCast)
-			end)
+			task.delay(0.15, function() castHitbox(comboToCast) end)
 
 			combo = combo + 1
 			if combo > 3 then 
@@ -311,24 +327,18 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			end
 
 			isAttacking = false
-
-			if inputBuffered then
-				triggerAttack()
-			end
+			if inputBuffered then triggerAttack() end
 		end
 
 		triggerAttack()
 
 	elseif input.KeyCode == Enum.KeyCode.E then
 		if isAttacking or isBlocking or isBarraging then return end
-
 		isBarraging = true
-		humanoid.WalkSpeed = 6 -- Move slightly faster during barrage to chase targets
-
+		humanoid.WalkSpeed = 6 
 		barrageTrack.Looped = true
 		barrageTrack:Play()
 		BarrageEvent:FireServer(true)
-
 		barrageTask = task.delay(MAX_BARRAGE_DURATION, function()
 			barrageTask = nil
 			stopBarrage()
@@ -336,7 +346,6 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
 	elseif input.KeyCode == Enum.KeyCode.F then
 		if isAttacking or isBarraging then return end
-
 		isBlocking = true
 		humanoid.WalkSpeed = 8 
 		if blockTrack.Length > 0 then blockTrack:Play() end
@@ -345,18 +354,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
 end)
 
 UserInputService.InputEnded:Connect(function(input, processed)
-	if input.KeyCode == Enum.KeyCode.LeftShift then
-		isSprinting = false
-		targetSpeed = WALK_SPEED
-
-	elseif input.KeyCode == Enum.KeyCode.E then
+	if input.KeyCode == Enum.KeyCode.E then
 		stopBarrage()
-
 	elseif input.KeyCode == Enum.KeyCode.F and isBlocking then
 		isBlocking = false
-		if not isBarraging and not character:GetAttribute("Stunned") then 
-			humanoid.WalkSpeed = isSprinting and SPRINT_SPEED or WALK_SPEED 
-		end
+		if not isBarraging and not character:GetAttribute("Stunned") then humanoid.WalkSpeed = 16 end
 		if blockTrack.Length > 0 then blockTrack:Stop(0) end
 		BlockEvent:FireServer(false)
 	end
@@ -367,7 +369,6 @@ character:GetAttributeChangedSignal("Stunned"):Connect(function()
 		isBlocking = false
 		isAttacking = false
 		stopBarrage() 
-
 		if blockTrack.Length > 0 then blockTrack:Stop(0) end
 		BlockEvent:FireServer(false)
 	end
