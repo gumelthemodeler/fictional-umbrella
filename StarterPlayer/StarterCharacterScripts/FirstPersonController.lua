@@ -43,22 +43,15 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
--- ==========================================
--- Load Animations
--- ==========================================
 local sprintAnim = Instance.new("Animation")
 sprintAnim.AnimationId = "rbxassetid://124651765736727"
 local sprintTrack = animator:LoadAnimation(sprintAnim)
 sprintTrack.Priority = Enum.AnimationPriority.Movement
 
 local slideAnim = Instance.new("Animation")
-slideAnim.AnimationId = "rbxassetid://136273104090828" -- YOUR SLIDE ID
+slideAnim.AnimationId = "rbxassetid://136273104090828" 
 local slideTrack = animator:LoadAnimation(slideAnim)
 slideTrack.Priority = Enum.AnimationPriority.Action 
-
--- ==========================================
--- DIRECTIONAL DASH ANIMATIONS (Replace IDs)
--- ==========================================
 
 local function loadDashTrack(id)
 	local anim = Instance.new("Animation")
@@ -69,13 +62,11 @@ local function loadDashTrack(id)
 end
 
 local dashTracks = {
-	F = loadDashTrack(92332496356968), -- Forward Dash
-	B = loadDashTrack(80312135198613), -- Backward Dash
-	L = loadDashTrack(130115019904122), -- Left Dash
-	R = loadDashTrack(134848342051959)  -- Right Dash
+	F = loadDashTrack(92332496356968),
+	B = loadDashTrack(80312135198613), 
+	L = loadDashTrack(130115019904122),
+	R = loadDashTrack(134848342051959)
 }
--- Ensure Dash overrides everything
-for _, track in pairs(dashTracks) do track.Priority = Enum.AnimationPriority.Action3 end
 
 local MovementFolder = ReplicatedStorage:WaitForChild("MovementEvents")
 local dashEvent = MovementFolder:WaitForChild("DashEvent")
@@ -142,7 +133,7 @@ local function stopSlide(keepMomentum)
 end
 
 RunService.Heartbeat:Connect(function(dt)
-	if humanoid.Health <= 0 then return end
+	if humanoid.Health <= 0 or character:GetAttribute("TimeStopped") then return end
 	local state = humanoid:GetState()
 	local flatVel = Vector3.new(rootPart.AssemblyLinearVelocity.X, 0, rootPart.AssemblyLinearVelocity.Z).Magnitude
 
@@ -199,7 +190,7 @@ end)
 
 local currentTilt = 0
 RunService.RenderStepped:Connect(function(dt)
-	if humanoid.Health <= 0 then return end
+	if humanoid.Health <= 0 or character:GetAttribute("TimeStopped") then return end
 
 	local flatVelocity = Vector3.new(rootPart.AssemblyLinearVelocity.X, 0, rootPart.AssemblyLinearVelocity.Z).Magnitude
 	local targetFOV = 70 + (flatVelocity * 0.35) 
@@ -223,6 +214,7 @@ end)
 
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
+	if character:GetAttribute("TimeStopped") then return end
 
 	if input.KeyCode == Enum.KeyCode.LeftShift then
 		isSprinting = true
@@ -270,8 +262,7 @@ UserInputService.InputBegan:Connect(function(input, gp)
 		local moveVector = require(player.PlayerScripts.PlayerModule):GetControls():GetMoveVector()
 		local dashDir = Vector3.zero
 
-		-- DYNAMIC DIRECTIONAL ANIMATION SELECTOR
-		local trackToPlay = dashTracks.F -- Default forward
+		local trackToPlay = dashTracks.F 
 
 		if moveVector.Magnitude > 0 then
 			local lookVector = camera.CFrame.LookVector
@@ -280,7 +271,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
 			local flatRight = Vector3.new(rightVector.X, 0, rightVector.Z).Unit
 			dashDir = ((flatLook * -moveVector.Z) + (flatRight * moveVector.X)).Unit
 
-			-- Select Animation based on raw input vector
 			if math.abs(moveVector.X) > math.abs(moveVector.Z) then
 				trackToPlay = moveVector.X < 0 and dashTracks.L or dashTracks.R
 			else
@@ -290,7 +280,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
 			dashDir = Vector3.new(-camera.CFrame.LookVector.X, 0, -camera.CFrame.LookVector.Z).Unit
 		end
 
-		-- Play the specific directional animation
 		trackToPlay:Play(0.1)
 
 		dashEvent:FireServer(dashDir)
