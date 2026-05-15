@@ -1,4 +1,5 @@
 -- @ScriptType: Script
+-- @ScriptType: Script
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
@@ -16,22 +17,26 @@ local BarrageEvent = CombatFolder:FindFirstChild("BarrageEvent") or Instance.new
 BarrageEvent.Name = "BarrageEvent"
 local BlockEvent = CombatFolder:FindFirstChild("BlockEvent") or Instance.new("RemoteEvent", CombatFolder)
 BlockEvent.Name = "BlockEvent"
+local SlamEvent = CombatFolder:FindFirstChild("SlamEvent") or Instance.new("RemoteEvent", CombatFolder)
+SlamEvent.Name = "SlamEvent"
 local VFXEvent = CombatFolder:FindFirstChild("VFXEvent") or Instance.new("RemoteEvent", CombatFolder)
 VFXEvent.Name = "VFXEvent"
 
 local M1_DAMAGE = 5
 local BARRAGE_DAMAGE = 0.5
+local SLAM_DAMAGE = 10
 local MAX_DIST = 12
 local MAX_BARRAGE_DURATION = 3 
+local SLAM_COOLDOWN = 6
 
 local activeBarrages = {}
 local blockingPlayers = {}
+local lastSlamTime = {} -- Server Cooldown Tracker
 
 local function applyStun(char, duration)
 	char:SetAttribute("Stunned", true)
 	local hum = char:FindFirstChild("Humanoid")
 	if hum then hum.WalkSpeed = 2 end
-
 	task.delay(duration, function()
 		if char:GetAttribute("Stunned") then
 			char:SetAttribute("Stunned", false)
@@ -47,11 +52,7 @@ local function applyKnockback(targetRoot, attackerRoot)
 end
 
 BlockEvent.OnServerEvent:Connect(function(player, isBlocking)
-	if isBlocking then
-		blockingPlayers[player] = true
-	else
-		blockingPlayers[player] = nil
-	end
+	if isBlocking then blockingPlayers[player] = true else blockingPlayers[player] = nil end
 end)
 
 M1Event.OnServerEvent:Connect(function(player, targetHum, comboNumber)
@@ -69,6 +70,11 @@ M1Event.OnServerEvent:Connect(function(player, targetHum, comboNumber)
 			local targetChest = targetHum.Parent:FindFirstChild("Torso") or targetHum.Parent:FindFirstChild("UpperTorso") or targetRoot
 			local hitPos = targetChest.Position + Vector3.new(math.random(-8, 8)/10, math.random(-8, 8)/10, math.random(-8, 8)/10)
 
+			if targetHum.Parent:GetAttribute("Invincible") then
+				VFXEvent:FireAllClients("Dodge", hitPos, player)
+				return
+			end
+
 			if targetPlayer and blockingPlayers[targetPlayer] then
 				if comboNumber == 3 then
 					blockingPlayers[targetPlayer] = nil
@@ -80,42 +86,71 @@ M1Event.OnServerEvent:Connect(function(player, targetHum, comboNumber)
 			else
 				targetHum:TakeDamage(M1_DAMAGE)
 				applyStun(targetHum.Parent, 0.6) 
-
-				if comboNumber == 3 then
-					applyKnockback(targetRoot, root)
-				end
-
+				if comboNumber == 3 then applyKnockback(targetRoot, root) end
 				VFXEvent:FireAllClients("Hit", hitPos, player)
 			end
 		end
 	end
 end)
 
+SlamEvent.OnServerEvent:Connect(function(player)
+	local char = player.Character
+	if not char or char:GetAttribute("Stunned") then return end
+
+	local currentTime = tick()
+	if currentTime - (lastSlamTime[player] or 0) < SLAM_COOLDOWN then return end
+	lastSlamTime[player] = currentTime
+
+	local root = char:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	local params = OverlapParams.new()
+	params.FilterDescendantsInstances = {char}
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	local hits = workspace:GetPartBoundsInRadius(root.Position, 12, params)
+	local validated = {}
+
+	for _, p in ipairs(hits) do
+		local hum = p.Parent:FindFirstChild("Humanoid")
+		if hum and not validated[hum] and hum.Health > 0 then
+			validated[hum] = true
+
+			local targetPlayer = Players:GetPlayerFromCharacter(hum.Parent)
+			local targetRoot = hum.Parent:FindFirstChild("HumanoidRootPart")
+
+			if hum.Parent:GetAttribute("Invincible") then
+				VFXEvent:FireAllClients("Dodge", targetRoot and targetRoot.Position or root.Position, player)
+				continue
+			end
+
+			if targetPlayer and blockingPlayers[targetPlayer] then
+				blockingPlayers[targetPlayer] = nil
+				applyStun(hum.Parent, 1.5)
+				VFXEvent:FireAllClients("GuardBreak", targetRoot and targetRoot.Position or root.Position, player)
+			else
+				hum:TakeDamage(SLAM_DAMAGE)
+				applyStun(hum.Parent, 0.8)
+				if targetRoot then targetRoot.AssemblyLinearVelocity = Vector3.new(0, 75, 0) end
+			end
+		end
+	end
+
+	VFXEvent:FireAllClients("Slam", root.Position - Vector3.new(0, 2.5, 0), player)
+end)
+
 BarrageEvent.OnServerEvent:Connect(function(player, state)
 	local char = player.Character
 	if char and char:GetAttribute("Stunned") then return end
-
-	if state then 
-		activeBarrages[player] = tick() 
-	else 
-		activeBarrages[player] = nil 
-	end
+	if state then activeBarrages[player] = tick() else activeBarrages[player] = nil end
 end)
 
 RunService.Heartbeat:Connect(function()
 	local currentTime = tick()
-
 	for player, startTime in pairs(activeBarrages) do
-		if currentTime - startTime > (MAX_BARRAGE_DURATION + 0.2) then
-			activeBarrages[player] = nil
-			continue
-		end
-
+		if currentTime - startTime > (MAX_BARRAGE_DURATION + 0.2) then activeBarrages[player] = nil continue end
 		local char = player.Character
-		if char and char:GetAttribute("Stunned") then
-			activeBarrages[player] = nil
-			continue
-		end
+		if char and char:GetAttribute("Stunned") then activeBarrages[player] = nil continue end
 
 		if char and char:FindFirstChild("HumanoidRootPart") then
 			local root = char.HumanoidRootPart
@@ -130,6 +165,8 @@ RunService.Heartbeat:Connect(function()
 				local hum = p.Parent:FindFirstChild("Humanoid")
 				if hum and not validated[hum] and hum.Health > 0 then
 					validated[hum] = true
+
+					if hum.Parent:GetAttribute("Invincible") then continue end
 
 					local targetPlayer = Players:GetPlayerFromCharacter(hum.Parent)
 					if not (targetPlayer and blockingPlayers[targetPlayer]) then
@@ -148,9 +185,4 @@ RunService.Heartbeat:Connect(function()
 			activeBarrages[player] = nil
 		end
 	end
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-	activeBarrages[player] = nil
-	blockingPlayers[player] = nil
 end)
