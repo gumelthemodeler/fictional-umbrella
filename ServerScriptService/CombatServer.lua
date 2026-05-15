@@ -186,3 +186,10 @@ RunService.Heartbeat:Connect(function()
 		end
 	end
 end)
+
+-- Generic VFX Bouncer (Allows clients to trigger non-damaging visuals like Auras)
+VFXEvent.OnServerEvent:Connect(function(player, vfxType, pos)
+	if typeof(vfxType) == "string" and typeof(pos) == "Vector3" then
+		VFXEvent:FireAllClients(vfxType, pos, player)
+	end
+end)
